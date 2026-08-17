@@ -279,18 +279,30 @@ def period_range_control(min_date: pd.Timestamp, max_date: pd.Timestamp, key_pre
     start_key = f"{key_prefix}_period_start_date"
     end_key = f"{key_prefix}_period_end_date"
 
+    min_dt = min_date.to_pydatetime()
+    max_dt = max_date.to_pydatetime()
+
     if slider_key not in st.session_state:
         default_start, default_end = default_period_range(min_date, max_date)
         st.session_state[slider_key] = (default_start.to_pydatetime(), default_end.to_pydatetime())
-    if start_key not in st.session_state:
-        s, _ = st.session_state[slider_key]
-        st.session_state[start_key] = s.date()
-    if end_key not in st.session_state:
-        _, e = st.session_state[slider_key]
-        st.session_state[end_key] = e.date()
+    else:
+        # The available date range can shrink (e.g. narrowing the
+        # Interconnectors/Auction type filters), leaving a previously-picked
+        # start/end outside the new bounds. Clamp before any widget renders,
+        # since date_input/slider raise an error if their stored value falls
+        # outside min_value/max_value.
+        s, e = st.session_state[slider_key]
+        s = min(max(s, min_dt), max_dt)
+        e = min(max(e, min_dt), max_dt)
+        if s > e:
+            s, e = min_dt, max_dt
+        st.session_state[slider_key] = (s, e)
 
-    min_dt = min_date.to_pydatetime()
-    max_dt = max_date.to_pydatetime()
+    # Keep the date-input boxes in sync with whatever the slider value ended
+    # up being (freshly defaulted, clamped, or unchanged)
+    s, e = st.session_state[slider_key]
+    st.session_state[start_key] = s.date()
+    st.session_state[end_key] = e.date()
 
     def _sync_from_dates():
         s = st.session_state[start_key]
