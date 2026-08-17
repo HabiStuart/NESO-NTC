@@ -127,6 +127,13 @@ def get_interconnector_reference_color(bsad_abbrev: str) -> str:
     return get_auction_shade_color(full_name, "Day Ahead")
 
 
+def get_interconnector_border_color(bsad_abbrev: str) -> str:
+    """A darker shade from the same color family, used as a bar outline so
+    the (deliberately pale) Day Ahead fill color doesn't look washed out."""
+    full_name = BSAD_ABBREV_TO_FULL_NAME.get(bsad_abbrev, bsad_abbrev)
+    return get_auction_shade_color(full_name, "Intraday 3")
+
+
 AUCTION_SUMMARY_CSV_URL = "https://api.neso.energy/datastore/dump/6a928369-bed3-445f-af8a-69cdb2cc5089"
 AUCTION_SUMMARY_SOURCE_PAGE = "https://www.neso.energy/data-portal/interconnector-requirement-and-auction-summary-data"
 
@@ -632,6 +639,11 @@ if dataset_name == ALL_LABEL:
                 labels={"Start Time": "Period start (GMT)", "Signed Volume": "Volume (MW)"},
             )
             vol_fig.add_hline(y=0, line_width=1, line_color="gray")
+            vol_fig.for_each_trace(lambda t: t.update(
+                opacity=1,
+                marker_line_color=get_interconnector_border_color(t.name),
+                marker_line_width=1,
+            ))
             vol_fig.update_layout(
                 margin=dict(l=10, r=10, t=30, b=80),
                 legend=dict(orientation="h", yanchor="top", y=-0.25, xanchor="center", x=0.5),
