@@ -81,8 +81,21 @@ INTERCONNECTOR_COLOR_FAMILY = {
     "Viking Link": "Purples",
     "IFA2": "Reds",
     "IFA": "YlOrBr",
+    "BritNed": "Greys",  # only appears in the BSAD auction data, no NTC dataset of its own
 }
 AUCTION_SHADE_ORDER = ["Day Ahead", "Intraday 1", "Intraday 2", "Intraday 3"]
+
+# The BSAD auction summary data abbreviates interconnector names differently
+# to the NTC datasets — map those abbreviations to the full names used above
+# so both charts can share the same color family per interconnector.
+BSAD_ABBREV_TO_FULL_NAME = {
+    "IFA1": "IFA",
+    "BN": "BritNed",
+    "NEMO": "NemoLink",
+    "IFA2": "IFA2",
+    "EL": "ElecLink",
+    "VKL": "Viking Link",
+}
 
 
 def get_auction_shade_color(interconnector_name: str, auction_type: str) -> str:
@@ -104,6 +117,14 @@ def rgb_to_rgba(rgb_str: str, alpha: float) -> str:
     """Convert a 'rgb(r,g,b)' string to 'rgba(r,g,b,alpha)' for semi-transparent fills."""
     nums = rgb_str[rgb_str.find("(") + 1: rgb_str.find(")")]
     return f"rgba({nums},{alpha})"
+
+
+def get_interconnector_reference_color(bsad_abbrev: str) -> str:
+    """The color used for this interconnector's Day Ahead series in the Flow
+    chart, looked up via its BSAD abbreviation — used to keep the BSAD volume
+    chart's interconnector colors consistent with the Flow chart's."""
+    full_name = BSAD_ABBREV_TO_FULL_NAME.get(bsad_abbrev, bsad_abbrev)
+    return get_auction_shade_color(full_name, "Day Ahead")
 
 
 AUCTION_SUMMARY_CSV_URL = "https://api.neso.energy/datastore/dump/6a928369-bed3-445f-af8a-69cdb2cc5089"
@@ -601,9 +622,13 @@ if dataset_name == ALL_LABEL:
         auction_agg["Signed Volume"] = auction_agg["Signed Volume"].fillna(0)
 
         if not auction_agg.empty:
+            bsad_color_map = {
+                abbrev: get_interconnector_reference_color(abbrev)
+                for abbrev in auction_agg["Interconnector"].unique()
+            }
             vol_fig = px.bar(
                 auction_agg, x="Start Time", y="Signed Volume", color="Interconnector",
-                barmode="relative",
+                barmode="relative", color_discrete_map=bsad_color_map,
                 labels={"Start Time": "Period start (GMT)", "Signed Volume": "Volume (MW)"},
             )
             vol_fig.add_hline(y=0, line_width=1, line_color="gray")
