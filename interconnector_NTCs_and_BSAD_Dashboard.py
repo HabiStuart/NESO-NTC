@@ -230,10 +230,16 @@ def build_reason_colored_figure(series_df: pd.DataFrame, series_name: str):
     for bid in block_id.unique():
         idx = sub.index[block_id == bid]
         start_idx, end_idx = idx[0], idx[-1]
+        reason_val = sub.loc[idx[0], "Reason"]
+        if reason_val == "No Data":
+            # Don't render a trace for genuine gaps — the neighbouring real
+            # blocks already extend one point into the gap (below), which is
+            # enough for their own lines to stop cleanly instead of drawing a
+            # diagonal across the missing stretch.
+            continue
         seg_start = max(start_idx - 1, 0)
         seg_end = min(end_idx + 1, len(sub) - 1)
         seg = sub.iloc[seg_start: seg_end + 1]
-        reason_val = sub.loc[idx[0], "Reason"]
         color = reason_color(reason_val, extra_colors)
 
         fig.add_scatter(
@@ -256,6 +262,31 @@ def build_reason_colored_figure(series_df: pd.DataFrame, series_name: str):
         margin=dict(l=10, r=10, t=40, b=10),
     )
     return fig
+
+
+def reindex_series_to_hourly_grid(df: pd.DataFrame, date_range) -> pd.DataFrame:
+    """Reindex each Series to a full hourly grid across date_range, leaving
+    genuinely missing hours as NaN. Auction rounds like Intraday 1/2/3 only
+    apply to periods near real-time, so most hours have no row for them —
+    without this, a line chart would draw a long diagonal straight through
+    the gap between the two nearest real points. NaN breaks the line instead."""
+    full_periods = pd.date_range(date_range[0], date_range[1], freq="h")
+    series_list = df["Series"].unique()
+    full_index = pd.MultiIndex.from_product([full_periods, series_list], names=[COL_PERIOD, "Series"])
+    grid = pd.DataFrame(index=full_index).reset_index()
+    return grid.merge(df[[COL_PERIOD, "Series", "Value"]], on=[COL_PERIOD, "Series"], how="left")
+
+
+def reindex_single_series_to_hourly_grid(series_df: pd.DataFrame, date_range) -> pd.DataFrame:
+    """Same idea as reindex_series_to_hourly_grid but for a single series
+    already filtered down, keeping Reason so the restriction-colored chart
+    can render. Missing hours get a placeholder Reason so a long gap collapses
+    into one contiguous block rather than one tiny block per missing hour."""
+    full_periods = pd.date_range(date_range[0], date_range[1], freq="h")
+    grid = pd.DataFrame({COL_PERIOD: full_periods})
+    merged = grid.merge(series_df[[COL_PERIOD, "Value", "Reason"]], on=COL_PERIOD, how="left")
+    merged["Reason"] = merged["Reason"].fillna("No Data")
+    return merged
 
 
 def default_period_range(min_date: pd.Timestamp, max_date: pd.Timestamp):
@@ -740,8 +771,9 @@ filtered = long_df[
 
 st.subheader("Flow (MW) by Auction Type & Direction")
 if not filtered.empty:
+    filtered_gridded = reindex_series_to_hourly_grid(filtered, date_range)
     fig = px.line(
-        filtered, x=COL_PERIOD, y="Value", color="Series",
+        filtered_gridded, x=COL_PERIOD, y="Value", color="Series",
         labels={COL_PERIOD: "Operational Period (GMT)", "Value": "Flow (MW)"},
     )
     fig.add_hline(y=0, line_width=1, line_color="gray")
@@ -759,7 +791,8 @@ available_series = sorted(filtered["Series"].unique())
 if available_series:
     chosen_series = st.selectbox("Series to inspect", options=available_series)
     series_df = filtered[filtered["Series"] == chosen_series]
-    reason_fig = build_reason_colored_figure(series_df, chosen_series)
+    series_df_gridded = reindex_single_series_to_hourly_grid(series_df, date_range)
+    reason_fig = build_reason_colored_figure(series_df_gridded, chosen_series)
     if reason_fig is not None:
         st.plotly_chart(reason_fig, use_container_width=True)
     else:
