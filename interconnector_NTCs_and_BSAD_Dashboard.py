@@ -23,6 +23,7 @@ import pandas as pd
 import requests
 import streamlit as st
 import plotly.express as px
+import plotly.graph_objects as go
 
 # ---------------------------------------------------------------------------
 # Dataset registry — add new interconnectors here.
@@ -69,6 +70,41 @@ DEFAULT_NTC_CAPACITY = {
     "NSL": 1400,
     "Viking Link": 1400,
 }
+
+# Each interconnector gets its own color family; within it, auction types are
+# shaded from lightest (Day Ahead) to darkest (Intraday 3), used by the
+# "Flow (MW) by Auction Type & Direction" overlaid area chart.
+INTERCONNECTOR_COLOR_FAMILY = {
+    "ElecLink": "Blues",
+    "NemoLink": "Greens",
+    "NSL": "Oranges",
+    "Viking Link": "Purples",
+    "IFA2": "Reds",
+    "IFA": "YlOrBr",
+}
+AUCTION_SHADE_ORDER = ["Day Ahead", "Intraday 1", "Intraday 2", "Intraday 3"]
+
+
+def get_auction_shade_color(interconnector_name: str, auction_type: str) -> str:
+    """Pick a shade from the interconnector's color family for this auction
+    type — lightest for Day Ahead, darkest for Intraday 3."""
+    family_name = INTERCONNECTOR_COLOR_FAMILY.get(interconnector_name, "Greys")
+    palette = getattr(px.colors.sequential, family_name)
+    if auction_type in AUCTION_SHADE_ORDER:
+        idx_in_order = AUCTION_SHADE_ORDER.index(auction_type)
+        n = len(AUCTION_SHADE_ORDER)
+    else:
+        idx_in_order, n = 0, 1
+    lo, hi = 1, len(palette) - 1  # skip index 0, often near-white
+    pos = round(lo + idx_in_order * (hi - lo) / (n - 1)) if n > 1 else (lo + hi) // 2
+    return palette[pos]
+
+
+def rgb_to_rgba(rgb_str: str, alpha: float) -> str:
+    """Convert a 'rgb(r,g,b)' string to 'rgba(r,g,b,alpha)' for semi-transparent fills."""
+    nums = rgb_str[rgb_str.find("(") + 1: rgb_str.find(")")]
+    return f"rgba({nums},{alpha})"
+
 
 AUCTION_SUMMARY_CSV_URL = "https://api.neso.energy/datastore/dump/6a928369-bed3-445f-af8a-69cdb2cc5089"
 AUCTION_SUMMARY_SOURCE_PAGE = "https://www.neso.energy/data-portal/interconnector-requirement-and-auction-summary-data"
@@ -287,6 +323,16 @@ def reindex_single_series_to_hourly_grid(series_df: pd.DataFrame, date_range) ->
     merged = grid.merge(series_df[[COL_PERIOD, "Value", "Reason"]], on=COL_PERIOD, how="left")
     merged["Reason"] = merged["Reason"].fillna("No Data")
     return merged
+
+
+def split_into_contiguous_blocks(df: pd.DataFrame, value_col: str = "Value") -> list:
+    """Split a gridded series into separate contiguous runs of real (non-NaN)
+    data. Needed because while a plain line breaks cleanly at NaN, an area
+    fill (fill='tozeroy') still draws a straight diagonal connecting across
+    a NaN gap — rendering each real run as its own trace avoids that."""
+    is_real = df[value_col].notna()
+    block_id = (is_real != is_real.shift()).cumsum()
+    return [g for _, g in df.groupby(block_id) if g[value_col].notna().all() and not g.empty]
 
 
 def default_period_range(min_date: pd.Timestamp, max_date: pd.Timestamp):
@@ -772,13 +818,52 @@ filtered = long_df[
 st.subheader("Flow (MW) by Auction Type & Direction")
 if not filtered.empty:
     filtered_gridded = reindex_series_to_hourly_grid(filtered, date_range)
-    fig = px.line(
-        filtered_gridded, x=COL_PERIOD, y="Value", color="Series",
-        labels={COL_PERIOD: "Operational Period (GMT)", "Value": "Flow (MW)"},
-    )
+
+    direction_order = ["To GB", "From GB"]
+    fig = go.Figure()
+    legend_shown = set()
+
+    for auction in AUCTION_SHADE_ORDER:
+        if auction not in selected_auctions:
+            continue
+        color = get_auction_shade_color(dataset_name, auction)
+        fillcolor = rgb_to_rgba(color, 0.45)
+        for direction in direction_order:
+            series_name = f"{auction} – {direction}"
+            sub = filtered_gridded[filtered_gridded["Series"] == series_name]
+            if sub.empty or sub["Value"].isna().all():
+                continue
+            show_legend = auction not in legend_shown
+            for block in split_into_contiguous_blocks(sub):
+                if len(block) < 2:
+                    continue  # a single isolated point can't form a visible area
+                fig.add_scatter(
+                    x=block[COL_PERIOD], y=block["Value"],
+                    mode="lines",
+                    line=dict(color=color, width=1.5),
+                    fill="tozeroy",
+                    fillcolor=fillcolor,
+                    name=auction,
+                    legendgroup=auction,
+                    showlegend=show_legend,
+                    hovertemplate=f"%{{x}}<br>%{{y}} MW<br>{series_name}<extra></extra>",
+                )
+                show_legend = False
+            legend_shown.add(auction)
+
     fig.add_hline(y=0, line_width=1, line_color="gray")
-    fig.update_layout(margin=dict(l=10, r=10, t=30, b=10))
+    fig.update_layout(
+        xaxis_title="Operational Period (GMT)",
+        yaxis_title="Flow (MW)",
+        margin=dict(l=10, r=10, t=30, b=80),
+        legend=dict(orientation="h", yanchor="top", y=-0.25, xanchor="center", x=0.5, title="Auction type"),
+    )
     st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "Overlaid (not stacked), semi-transparent by auction type — lighter shades are "
+        "closer to Day Ahead, darker shades are closer to Intraday 3. To GB sits above "
+        "zero, From GB below."
+    )
 else:
     st.info("No data matches the current filters.")
 
