@@ -154,6 +154,19 @@ COL_FROM_GB = "Flow (MW) From GB"
 COL_REASON_TO = "Reason For Restriction To GB"
 COL_REASON_FROM = "Reason For Restriction From GB"
 
+# NESO renamed these NTC column ids on 17 Sep 2026. Map the new ids back to the
+# names used throughout this dashboard, so both old and new schemas work.
+NTC_COLUMN_RENAMES = {
+    "Data Upload Time GMT": COL_UPLOAD,
+    "Operational Period Start Date and Time GMT": COL_PERIOD,
+    "Flow in MW To GB": COL_TO_GB,
+    "Flow in MW From GB": COL_FROM_GB,
+}
+REQUIRED_NTC_COLUMNS = [
+    COL_UPLOAD, COL_AUCTION, COL_PERIOD, COL_TO_GB, COL_FROM_GB,
+    COL_REASON_TO, COL_REASON_FROM,
+]
+
 st.set_page_config(page_title="Interconnector NTC Dashboard", layout="wide")
 
 
@@ -168,6 +181,16 @@ def load_data(url: str) -> pd.DataFrame:
     resp.raise_for_status()
     df = pd.read_csv(io.StringIO(resp.text))
     df.columns = [c.strip() for c in df.columns]
+    return df
+
+
+def normalise_ntc_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Rename NESO's new (Sep 2026) NTC column ids to the legacy names, and fail
+    with a clear message listing the actual columns if any are still missing."""
+    df = df.rename(columns=NTC_COLUMN_RENAMES)
+    missing = [c for c in REQUIRED_NTC_COLUMNS if c not in df.columns]
+    if missing:
+        raise KeyError(f"missing columns {missing}; source has {list(df.columns)}")
     return df
 
 
@@ -487,7 +510,7 @@ if dataset_name == ALL_LABEL:
         cfg = DATASETS[name]
         try:
             with st.spinner(f"Fetching {name}..."):
-                raw = load_data(cfg["csv_url"])
+                raw = normalise_ntc_columns(load_data(cfg["csv_url"]))
             per_interconnector_raw[name] = prepare_data(raw)
         except Exception as e:
             fetch_errors.append(f"{name}: {e}")
@@ -810,7 +833,7 @@ st.title(f"{dataset_name} Net Transfer Capacity — Live Dashboard")
 
 try:
     with st.spinner("Fetching latest data..."):
-        raw_df = load_data(dataset_cfg["csv_url"])
+        raw_df = normalise_ntc_columns(load_data(dataset_cfg["csv_url"]))
 except Exception as e:
     st.error(f"Couldn't fetch data from NESO: {e}")
     st.stop()
